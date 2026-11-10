@@ -44,7 +44,8 @@ instructions to `templates/user-claude.md`.
 ## Install
 
 1. **Fork this repo**, or use it as is. Either way, pin a commit: whatever
-   `SETUP_COMMIT` points at runs with your secrets.
+   `SETUP_COMMIT` points at runs with your secrets. The bootstrap refuses
+   anything but a full commit SHA unless you set `ALLOW_UNPINNED_SETUP=1`.
 2. In the cloud environment's settings, set these **environment variables**,
    which the session hooks read:
    - `OBSIDIAN_EMAIL`
@@ -55,12 +56,15 @@ instructions to `templates/user-claude.md`.
      account without MFA suits automation better.
 3. Paste [`bootstrap.sh`](bootstrap.sh) as the environment's **Setup script**
    and fill in its `EDIT ME` block:
-   - `SETUP_REPO` and `SETUP_COMMIT`: this repo or your fork, at a full commit
-     SHA.
+   - `SETUP_REPO` and `SETUP_COMMIT`: this repo or your fork, at a full
+     40-character commit SHA (required).
+   - `OBSIDIAN_HEADLESS_VERSION` (optional): overrides the `obsidian-headless`
+     version pinned in `setup.sh`.
    - `AGE_KEY` (optional): an age identity for the per-project secrets below.
    - `VAULT_SEED_REPO` (optional): a git backup of the vault.
    - `GITHUB_TOKEN` (optional): a fine-grained token with read-only
-     **Contents** on each private repo above.
+     **Contents** on each private repo above. It is only ever sent to
+     `github.com`.
 4. Start a session. If the build fails, the UI shows the build output.
 
 To roll out a change, push it to the setup repo, then update `SETUP_COMMIT` in
@@ -154,12 +158,20 @@ keeps:
 ## Testing
 
 ```bash
+tests/run.sh
+```
+
+That runs the hooks, `bootstrap.sh` and `setup.sh` against stub `ob`, `npm` and
+`age` commands in a throwaway `HOME`. It needs no network and no Obsidian
+account.
+
+```bash
 docker run --rm -v "$PWD":/src:ro node:24-bookworm bash -c \
   'cp -r /src /setup && CLAUDE_MD_PATH=/root/CLAUDE.md bash /setup/setup.sh \
    && ~/.claude/hooks/vault-doctor.sh'
 ```
 
-That builds into a throwaway container. Add `-e VAULT_SEED_REPO=...` and
+The second command builds into a throwaway container with the real tools. Add `-e VAULT_SEED_REPO=...` and
 `-e AGE_KEY=...` to exercise the seed and decryption paths, or `-e OBSIDIAN_*`
 and run `~/.claude/hooks/vault-sync-pull.sh` to try a real sync.
 

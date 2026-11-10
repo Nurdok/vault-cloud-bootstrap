@@ -99,6 +99,48 @@ push_seed_pending() {
 }
 t "push: does nothing while the git seed is unreconciled" push_seed_pending
 
+# ---- build: bootstrap.sh and setup.sh ------------------------------------------
+build() {   # run setup.sh the way the bootstrap does; output in $T/build.out
+  CLAUDE_MD_PATH="$HOME/CLAUDE.md" bash "$REPO/setup.sh" >"$T/build.out" 2>&1
+}
+bootstrap_with() {   # bootstrap_with <sed-expr>...: run an edited copy of bootstrap.sh
+  local args=(-e '') e
+  for e in "$@"; do args+=(-e "$e"); done
+  sed "${args[@]}" "$REPO/bootstrap.sh" >"$T/bootstrap.sh"
+  bash "$T/bootstrap.sh" >"$T/bootstrap.out" 2>&1
+}
+
+bootstrap_unpinned() {
+  bootstrap_with; eq $? 1 "exit code with an empty SETUP_COMMIT"
+  has "$T/bootstrap.out" 'SETUP_COMMIT must be a full 40-character commit SHA'
+  bootstrap_with "s/^SETUP_COMMIT=.*/SETUP_COMMIT='main'/"; eq $? 1 "exit code with a branch name"
+  has "$T/bootstrap.out" "got 'main'"
+}
+t "bootstrap: refuses a SETUP_COMMIT that is not a full SHA" bootstrap_unpinned
+
+bootstrap_token_host() {
+  # An unreachable non-GitHub repo: the fetch fails, and the token must not be probed against it.
+  bootstrap_with "s/^SETUP_COMMIT=.*/SETUP_COMMIT='$(printf 'a%.0s' $(seq 40))'/" \
+    "s#^SETUP_REPO=.*#SETUP_REPO='file://$T/nope'#" "s/^GITHUB_TOKEN=.*/GITHUB_TOKEN='github_pat_x'/"
+  eq $? 1 "exit code"
+  has "$T/bootstrap.out" 'not on https://github.com/, so the GitHub token was not used'
+  hasnt "$T/bootstrap.out" 'answered the token'
+}
+t "bootstrap: never sends the GitHub token to another host" bootstrap_token_host
+
+setup_pins_ob() {
+  export STUB_OB_INSTALLED=0.0.1
+  build; eq $? 0 "setup.sh exit code"
+  has "$STUB_DIR/npm-installs" 'obsidian-headless@0\.0\.14$'
+  rm -f "$STUB_DIR/npm-installs"; export STUB_OB_INSTALLED=0.0.14
+  build
+  [ ! -e "$STUB_DIR/npm-installs" ] && ok || bad "reinstalled although the pinned version is present"
+  rm -f "$STUB_DIR/npm-installs"
+  OBSIDIAN_HEADLESS_VERSION=9.9.9 build
+  has "$STUB_DIR/npm-installs" 'obsidian-headless@9\.9\.9$'
+}
+t "setup: installs the pinned obsidian-headless version" setup_pins_ob
+
 # ---- static checks ------------------------------------------------------------
 static() {
   local f

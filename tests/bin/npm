@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stub npm for tests/run.sh: reports STUB_OB_INSTALLED as the globally installed
+# obsidian-headless version and records `npm install` arguments.
+: "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
+case "$1" in
+  ls) [ -n "${STUB_OB_INSTALLED:-}" ] && echo "└── obsidian-headless@$STUB_OB_INSTALLED" ;;
+  install) printf '%s\n' "$*" >>"$STUB_DIR/npm-installs" ;;
+esac
+exit 0

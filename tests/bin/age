@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stub age for tests/run.sh: only answers --version, so setup.sh skips apt.
+echo "v0.0.0-stub"
