@@ -28,7 +28,7 @@ Environment build (once, cached)          Every session
 ────────────────────────────────          ─────────────────────────────────────
 bootstrap.sh (pasted in the UI)           SessionStart: vault-sync-pull.sh
  └ fetch this repo @ SETUP_COMMIT          └ detached worker, up to 10 tries:
-    └ setup.sh                                ob login / sync-setup (first time)
+    └ setup.sh                                ob login (no token) / sync-setup
        ├ npm i -g obsidian-headless           ob sync into ~/vault
        ├ apt install age                      decrypt _env/<repo>/*.age → repo
        ├ seed ~/vault from git (optional)     delete the key-bearing script
@@ -48,12 +48,19 @@ instructions to `templates/user-claude.md`.
    anything but a full commit SHA unless you set `ALLOW_UNPINNED_SETUP=1`.
 2. In the cloud environment's settings, set these **environment variables**,
    which the session hooks read:
-   - `OBSIDIAN_EMAIL`
-   - `OBSIDIAN_PASSWORD`
    - `OBSIDIAN_VAULT_NAME`: the remote vault's name in Obsidian Sync.
-   - `OBSIDIAN_VAULT_PASSWORD`: its end-to-end encryption password.
-   - `OBSIDIAN_MFA` (optional): only if the account uses 2FA. A dedicated
-     account without MFA suits automation better.
+   - `OBSIDIAN_VAULT_PASSWORD`: its end-to-end encryption password. Leave it
+     out for a vault without end-to-end encryption.
+   - `OBSIDIAN_AUTH_TOKEN` (recommended): an Obsidian auth token. When set, it
+     is the only credential used and the email and password are ignored. See
+     [Authentication](#authentication).
+   - `OBSIDIAN_EMAIL` and `OBSIDIAN_PASSWORD`: the account login, used only
+     when no token is set.
+   - `OBSIDIAN_MFA` (optional): only with the password login, if the account
+     uses 2FA. A 2FA code expires within a minute, so this suits a one-off test
+     at best.
+   - `OBSIDIAN_DEVICE_NAME` (optional): how sessions appear in Sync's version
+     history. Defaults to `claude-cloud`.
 3. Paste [`bootstrap.sh`](bootstrap.sh) as the environment's **Setup script**
    and fill in its `EDIT ME` block:
    - `SETUP_REPO` and `SETUP_COMMIT`: this repo or your fork, at a full
@@ -70,6 +77,37 @@ instructions to `templates/user-claude.md`.
 To roll out a change, push it to the setup repo, then update `SETUP_COMMIT` in
 the pasted bootstrap. The build is cached, so a push alone changes nothing; the
 edit to the setup script is what triggers a rebuild.
+
+## Authentication
+
+Everything in a session's environment is readable by the session's agent, so
+the question is which credential to expose.
+
+**An auth token (recommended).** Set `OBSIDIAN_AUTH_TOKEN`. `ob` reads the
+variable directly, so the hooks never log in and the account password never
+enters the environment. A token can sync and list vaults, but it is not the
+password: it cannot be used to sign in to the account page, and logging it out
+revokes it. To get one, log in once anywhere, for example in a throwaway
+container, and copy the token:
+
+```bash
+docker run --rm -it node:24-bookworm bash -c \
+  'npm install -g obsidian-headless >/dev/null && ob login && cat ~/.config/obsidian-headless/auth_token; echo'
+```
+
+Do not run `ob logout` there: that revokes the token. It works with 2FA, since
+you type the code yourself during that one login.
+
+**Email and password.** Without a token, the worker logs in with
+`OBSIDIAN_EMAIL` and `OBSIDIAN_PASSWORD` at the start of every new session.
+That puts the account password where the agent can read it, creates a new
+login token per session that nothing ever revokes, and cannot work unattended
+with 2FA.
+
+Either way, passwords are passed to `ob` on stdin, never as command-line
+arguments. If `ob` rejects a credential (account password, 2FA code, vault
+password) or cannot find the vault, the worker stops after two rejections
+instead of retrying ten times, so a typo cannot lock the account.
 
 ## Seeding from a git backup
 

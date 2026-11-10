@@ -22,9 +22,16 @@ else
 fi
 
 section "Session environment (values hidden)"
-for var in OBSIDIAN_EMAIL OBSIDIAN_PASSWORD OBSIDIAN_VAULT_NAME OBSIDIAN_VAULT_PASSWORD OBSIDIAN_MFA HTTPS_PROXY; do
+for var in OBSIDIAN_AUTH_TOKEN OBSIDIAN_EMAIL OBSIDIAN_PASSWORD OBSIDIAN_MFA OBSIDIAN_VAULT_NAME OBSIDIAN_VAULT_PASSWORD HTTPS_PROXY; do
   printf '  %-24s %s\n' "$var" "$([ -n "${!var:-}" ] && echo set || echo unset)"
 done
+if [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ]; then
+  echo "  auth method: OBSIDIAN_AUTH_TOKEN (email and password ignored)"
+elif [ -n "${OBSIDIAN_EMAIL:-}" ] && [ -n "${OBSIDIAN_PASSWORD:-}" ]; then
+  echo "  auth method: account email and password"
+else
+  echo "  auth method: NONE (set OBSIDIAN_AUTH_TOKEN, or OBSIDIAN_EMAIL and OBSIDIAN_PASSWORD)"
+fi
 echo "  project dir: $ROOT"
 
 section "Tools"
@@ -44,7 +51,7 @@ else
   echo "  $VAULT_DIR: missing"
 fi
 echo "  seed marker (.seeded-from-git, download-only while present): $(present "$VAULT_DIR/.seeded-from-git")"
-echo "  ob auth token: $(present "$OB_CONFIG_DIR/auth_token")"
+echo "  ob auth token file (password login only): $(present "$OB_CONFIG_DIR/auth_token")"
 if command -v ob >/dev/null 2>&1 && [ -d "$VAULT_DIR" ]; then
   echo "  ob sync-status:"
   NODE_OPTIONS="--use-env-proxy --disable-warning=UNDICI-EHPA" timeout 30 ob sync-status --path "$VAULT_DIR" 2>&1 | sed 's/^/    /'

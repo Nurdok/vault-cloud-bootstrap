@@ -83,6 +83,73 @@ pull_seed() {
 }
 t "pull: a git-seeded vault reconciles download-only first" pull_seed
 
+# ---- auth ---------------------------------------------------------------------
+auth_token() {
+  unset OBSIDIAN_EMAIL OBSIDIAN_PASSWORD
+  export OBSIDIAN_AUTH_TOKEN=good-token
+  pull
+  has "$PULL_LOG" 'auth: OBSIDIAN_AUTH_TOKEN'; has "$PULL_LOG" 'sync ok on attempt 1'
+  eq "$(stub_count logins)" 0 "logins"
+  [ ! -e "$HOME/.config/obsidian-headless/auth_token" ] && ok || bad "token was written to disk"
+}
+t "auth: OBSIDIAN_AUTH_TOKEN alone is enough" auth_token
+
+auth_token_overrides() {
+  export OBSIDIAN_AUTH_TOKEN=good-token OBSIDIAN_PASSWORD=wrong
+  pull
+  has "$PULL_LOG" 'sync ok on attempt 1'; eq "$(stub_count logins)" 0 "logins"
+}
+t "auth: the token overrides email and password" auth_token_overrides
+
+auth_bad_token() {
+  export OBSIDIAN_AUTH_TOKEN=revoked
+  pull
+  has "$PULL_LOG" 'vault sync failed'; hasnt "$PULL_LOG" 'sync ok'
+  eq "$(stub_count logins)" 0 "logins (must not fall back to the password)"
+}
+t "auth: a bad token never falls back to a password login" auth_bad_token
+
+auth_no_secrets_in_argv() {
+  export OBSIDIAN_PASSWORD='s3cret pw' STUB_PASSWORD='s3cret pw'
+  export OBSIDIAN_VAULT_PASSWORD='v4ult pw' STUB_VAULT_PASSWORD='v4ult pw'
+  pull
+  has "$PULL_LOG" 'sync ok on attempt 1'
+  hasnt "$STUB_DIR/calls" 's3cret|v4ult'; hasnt "$PULL_LOG" 's3cret|v4ult'
+  has "$STUB_DIR/calls" '^sync-setup .*--device-name claude-cloud'
+}
+t "auth: passwords are passed on stdin, never as arguments" auth_no_secrets_in_argv
+
+auth_wrong_password() {
+  export OBSIDIAN_PASSWORD=wrong
+  pull
+  eq "$(stub_count logins)" 2 "login attempts"
+  has "$PULL_LOG" 'giving up: credentials rejected 2 times'
+}
+t "auth: a rejected password is tried twice, not ten times" auth_wrong_password
+
+auth_wrong_vault_password() {
+  export OBSIDIAN_VAULT_PASSWORD=wrong
+  pull
+  eq "$(stub_count logins)" 1 "logins"; eq "$(stub_count setups)" 2 "setup attempts"
+  has "$PULL_LOG" 'vault setup was rejected'
+}
+t "auth: a rejected vault password is tried twice" auth_wrong_vault_password
+
+auth_no_vault_password() {
+  unset OBSIDIAN_VAULT_PASSWORD; export STUB_VAULT_PASSWORD=''
+  pull
+  has "$PULL_LOG" 'sync ok on attempt 1'
+}
+t "auth: the vault password is optional (vault without E2EE)" auth_no_vault_password
+
+auth_missing() {
+  unset OBSIDIAN_PASSWORD
+  pull
+  has "$PULL_LOG" 'not set in the session environment: OBSIDIAN_PASSWORD'
+  has "$PULL_LOG" 'either OBSIDIAN_AUTH_TOKEN or OBSIDIAN_EMAIL'
+}
+t "auth: explains what to set when nothing usable is configured" auth_missing
+
 # ---- push hook ----------------------------------------------------------------
 push_happy() {
   pull; push
