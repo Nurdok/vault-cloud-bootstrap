@@ -148,6 +148,15 @@ ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 # Needs the vault name plus either an auth token (preferred: it can be revoked
 # and is not the account password) or the account email and password.
 # OBSIDIAN_VAULT_PASSWORD is only needed for an end-to-end encrypted vault.
+# The worker deletes the key-bearing decrypt script when it exits. When no
+# worker is going to run, nothing can be decrypted this session, so the launcher
+# removes the script itself rather than leaving the age key on disk.
+no_worker() {
+  if [ -f "$HOOKS/.decrypt.sh" ]; then
+    rm -f "$HOOKS/.decrypt.sh"
+    echo "[vault-sync] removed .decrypt.sh: no sync this session, so nothing to decrypt." >>"$LOG"
+  fi
+}
 missing=""
 [ -n "${OBSIDIAN_VAULT_NAME:-}" ] || missing="$missing OBSIDIAN_VAULT_NAME"
 if [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ]; then
@@ -165,14 +174,14 @@ case "${VAULT_SYNC_MODE:-bidirectional}" in
   *)
     # Fail closed: a typo must not silently become a two-way sync.
     echo "[vault-sync] VAULT_SYNC_MODE='$VAULT_SYNC_MODE' is not bidirectional, pull-only or mirror-remote; vault sync skipped." >>"$LOG"
-    exit 0 ;;
+    no_worker; exit 0 ;;
 esac
 if [ -n "$missing" ]; then
   {
     echo "[vault-sync] not set in the session environment:$missing; vault sync skipped."
     echo "[vault-sync] set OBSIDIAN_VAULT_NAME and either OBSIDIAN_AUTH_TOKEN or OBSIDIAN_EMAIL + OBSIDIAN_PASSWORD."
   } >>"$LOG"
-  exit 0
+  no_worker; exit 0
 fi
 
 nohup bash "$SELF" --worker "$ROOT" >>"$LOG" 2>&1 &

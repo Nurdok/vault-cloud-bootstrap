@@ -17,6 +17,11 @@ set -euo pipefail
 # Optional: age identity for decrypting _env/<repo>/*.age from the vault into
 # each session's project directory. Empty disables .env decryption.
 AGE_KEY=''
+# Optional: bash extended glob of file names the decrypt step may write into a
+# project. Empty uses the default, '@(.env|.env.*)': .env, .env.local, and so
+# on. Widen it only if you keep other secret files in _env/, and never to names
+# a tool runs or loads by itself (.envrc, .mcp.json, Makefile, ...).
+SECRET_NAME_PATTERN=''
 # Optional: git backup of the vault, for a fast first sync (see README).
 VAULT_SEED_REPO=''
 # Optional: GitHub fine-grained token with read-only Contents on every private
@@ -89,5 +94,5 @@ if ! git -C "$dir" fetch -q --depth 1 "$SETUP_REPO" "$SETUP_COMMIT"; then
   exit 1
 fi
 git -C "$dir" checkout -q FETCH_HEAD
-AGE_KEY="$AGE_KEY" VAULT_SEED_REPO="$VAULT_SEED_REPO" \
+AGE_KEY="$AGE_KEY" SECRET_NAME_PATTERN="$SECRET_NAME_PATTERN" VAULT_SEED_REPO="$VAULT_SEED_REPO" \
   OBSIDIAN_HEADLESS_VERSION="$OBSIDIAN_HEADLESS_VERSION" bash "$dir/setup.sh"
