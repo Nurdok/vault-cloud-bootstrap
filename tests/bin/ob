@@ -32,7 +32,13 @@ state="$STUB_DIR/vault-state"
 
 case "$cmd" in
   login)
-    count logins >/dev/null
+    n=$(count logins)
+    if [ "$n" -le "${STUB_LOGIN_NETWORK_FAILS:-0}" ]; then
+      # What the real CLI prints, and exits with, when the request cannot leave the VM.
+      echo "Login failed: TypeError: fetch failed" >&2
+      echo "    cause: RequestAbortedError [AbortError]: Proxy response (403) !== 200 when HTTP Tunneling" >&2
+      exit 2
+    fi
     if [ -z "$email" ] && [ "$has_password" = 0 ] && [ -n "$(token)" ]; then
       if [ "$(token)" = "${STUB_TOKEN:-good-token}" ]; then echo "Logged in as Test (test@example.com)"; exit 0; fi
     fi
