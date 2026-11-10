@@ -11,7 +11,7 @@ set -euo pipefail
 #
 #   ~/.claude/hooks/vault-sync-pull.sh   SessionStart: launches the bg worker (keyless)
 #   ~/.claude/hooks/.decrypt.sh          keyed decrypt for the current project (ephemeral)
-#   ~/.claude/hooks/vault-sync-push.sh   Stop and SessionEnd: pushes vault edits
+#   ~/.claude/hooks/vault-sync-push.sh   Stop: pushes vault edits
 #   ~/.claude/hooks/vault-doctor.sh      diagnostic report, run on demand
 #   /home/user/CLAUDE.md                 vault instructions for every session
 #
@@ -203,9 +203,15 @@ ensure("SessionStart", "~/.claude/hooks/vault-sync-pull.sh", 30, "startup|resume
 # The push hook budgets 100s for itself (VAULT_PUSH_TIMEOUT), below this limit,
 # so ob is stopped cleanly by the hook rather than killed by Claude Code.
 ensure("Stop",       "~/.claude/hooks/vault-sync-push.sh", 150)
-# A last push when the session ends, for edits made in a turn that never
-# reached its Stop hook.
-ensure("SessionEnd", "~/.claude/hooks/vault-sync-push.sh", 150)
+# Deliberately NOT registered on SessionEnd (or any other event): a session
+# that ends without a completed turn may hold a half-finished edit, and an
+# edit that fails to sync is preferred to a partial one reaching the vault.
+# Remove the registration an earlier version of this script made.
+for e in hooks.get("SessionEnd", []):
+    e["hooks"] = [h for h in e.get("hooks", []) if h.get("command") != "~/.claude/hooks/vault-sync-push.sh"]
+hooks["SessionEnd"] = [e for e in hooks.get("SessionEnd", []) if e["hooks"]]
+if not hooks["SessionEnd"]:
+    del hooks["SessionEnd"]
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
 os.chmod(path, 0o600)

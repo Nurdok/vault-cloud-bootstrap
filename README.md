@@ -16,8 +16,8 @@ In each session, the hooks then:
 
 - sync the vault from Obsidian Sync in the background at session start;
 - decrypt the current project's secrets from the vault;
-- push vault edits back at the end of every turn, and tell you when a push
-  fails.
+- push vault edits back when a turn completes, and only then, and tell you
+  when a push fails.
 
 The vault stays in Obsidian Sync, and no project repository has to know about
 it. This project is not affiliated with Anthropic or Obsidian.
@@ -33,7 +33,7 @@ bootstrap.sh (pasted in the UI)           SessionStart: vault-sync-pull.sh
        ├ npm i -g obsidian-headless           ob sync into ~/vault
        ├ apt install age                      decrypt _env/<repo>/*.age → repo
        ├ seed ~/vault from git (optional)     delete the key-bearing script
-       ├ install hooks + doctor           Stop (every turn) and SessionEnd:
+       ├ install hooks + doctor           Stop (each completed turn):
        └ /home/user/CLAUDE.md              vault-sync-push.sh
                                            └ ob sync (pushes edits; reports failure)
 ```
@@ -140,22 +140,36 @@ counted as a rejection and keeps the full ten retries.
 
 ## When edits are pushed, and when they are not
 
-Vault edits leave the session only when the push hook runs: at the end of each
-turn (Stop) and when the session ends (SessionEnd). A session VM is discarded
-some time after it goes idle, so an edit that was never pushed is lost with it.
-The push hook is built around that:
+The rule is conservative on purpose: **an edit that fails to sync is preferred
+to a faulty or partial edit reaching the vault.** A missed push costs one
+session's edits. A half-finished edit that syncs lands on every device.
 
-- It waits for the vault lock when the pull worker or another push is still
-  syncing, instead of failing.
-- It stops `ob` itself after 100 seconds (`VAULT_PUSH_TIMEOUT`), with a signal
-  `ob` shuts down cleanly on, before Claude Code's hook timeout would kill it.
-- A failed push is never silent. The first failure of a streak blocks the stop
-  once, so the agent tells you; later failures show a warning line until a push
-  succeeds. Every Stop retries the push.
+So vault edits leave the session at exactly one point: the Stop hook, when a
+turn completes. Nothing else pushes.
 
-What it cannot cover: a turn that is cut off before its Stop hook runs (the VM
-pausing mid-turn, a crash) leaves its edits unpushed until the next turn ends.
-There is no continuous sync while a turn is running.
+- There is no continuous sync. While a turn is running, the agent's
+  intermediate states stay in the session.
+- Nothing is pushed when a session ends or is cut off mid-turn (the VM pausing,
+  a crash, an interrupted turn). Those edits stay in the session. They are
+  pushed if a later turn in the same session completes, and lost if the session
+  is discarded first. The push hook refuses to run for any event but Stop.
+- `ob` is stopped with a signal it shuts down cleanly on, after 100 seconds
+  (`VAULT_PUSH_TIMEOUT`), before Claude Code's hook timeout would kill it
+  mid-write.
+
+Within that rule, a push that should have happened and did not is never
+silent:
+
+- The hook waits for the vault lock when the pull worker or another push is
+  still syncing, instead of failing.
+- The first failed push of a streak blocks the stop once, so the agent tells
+  you; later failures show a warning line until a push succeeds. Every Stop
+  retries the push.
+
+What this does not judge is whether a completed turn's edit is *right*. For
+that, see [Before you let an agent write to your
+vault](#before-you-let-an-agent-write-to-your-vault): `VAULT_SYNC_MODE=pull-only`
+stops all uploads.
 
 ## Seeding from a git backup
 
@@ -285,7 +299,7 @@ and run `~/.claude/hooks/vault-sync-pull.sh` to try a real sync.
 | `bootstrap.sh` | the environment's Setup script | Configuration and secrets; fetches and runs `setup.sh`. |
 | `setup.sh` | | Runs at environment build; see its header for the design. |
 | `hooks/vault-sync-pull.sh` | `~/.claude/hooks/vault-sync-pull.sh` | SessionStart: background sync and decrypt worker. |
-| `hooks/vault-sync-push.sh` | `~/.claude/hooks/vault-sync-push.sh` | Stop and SessionEnd: pushes vault edits, reports failures. |
+| `hooks/vault-sync-push.sh` | `~/.claude/hooks/vault-sync-push.sh` | Stop: pushes vault edits when a turn completes, reports failures. |
 | `hooks/decrypt.sh` | `~/.claude/hooks/.decrypt.sh` | Template; `setup.sh` bakes the key in. Deleted after use. |
 | `hooks/vault-doctor.sh` | `~/.claude/hooks/vault-doctor.sh` | Diagnostic report; prints no secrets. |
 | `templates/user-claude.md` | `/home/user/CLAUDE.md` | Instructions for every session. |

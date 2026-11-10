@@ -198,12 +198,14 @@ push_failure_reported() {
 }
 t "push: a failed push is reported, never silent" push_failure_reported
 
-push_session_end() {
-  pull; : >"$STUB_DIR/fail-sync"
+push_only_on_stop() {
+  pull
   push '{"hook_event_name": "SessionEnd", "reason": "other"}'
-  eq "$(cat "$T/push.out")" "" "output on SessionEnd"; has "$PUSH_LOG" 'PUSH FAILED'
+  eq "$(stub_count syncs)" 1 "syncs (SessionEnd must not push)"
+  eq "$(cat "$T/push.out")" "" "output on SessionEnd"; has "$PUSH_LOG" 'called for SessionEnd, not Stop; push skipped'
+  push; eq "$(stub_count syncs)" 2 "syncs after a Stop"
 }
-t "push: SessionEnd pushes without emitting Stop decisions" push_session_end
+t "push: only a completed turn (Stop) pushes" push_only_on_stop
 
 push_waits_for_lock() {
   pull
@@ -342,7 +344,8 @@ setup_registers_hooks() {
   cat >"$HOME/.claude/settings.json" <<'JSON'
 {"hooks": {"SessionStart": [
   {"matcher": "*", "hooks": [{"type": "command", "command": "~/.claude/hooks/vault-sync-pull.sh", "timeout": 30}]},
-  {"matcher": "startup", "hooks": [{"type": "command", "command": "other.sh"}]}]}}
+  {"matcher": "startup", "hooks": [{"type": "command", "command": "other.sh"}]}],
+ "SessionEnd": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/vault-sync-push.sh", "timeout": 150}]}]}}
 JSON
   build; build
   python3 - "$HOME/.claude/settings.json" >"$T/hooks.txt" <<'PY'
@@ -355,8 +358,8 @@ PY
   has "$T/hooks.txt" '^SessionStart startup\|resume ~/.claude/hooks/vault-sync-pull.sh 30$'
   has "$T/hooks.txt" '^SessionStart startup other.sh'
   has "$T/hooks.txt" '^Stop - ~/.claude/hooks/vault-sync-push.sh 150$'
-  has "$T/hooks.txt" '^SessionEnd - ~/.claude/hooks/vault-sync-push.sh 150$'
-  eq "$(wc -l <"$T/hooks.txt" | tr -d ' ')" 4 "registered hooks after two builds"
+  hasnt "$T/hooks.txt" '^SessionEnd'   # an older build's SessionEnd push is removed
+  eq "$(wc -l <"$T/hooks.txt" | tr -d ' ')" 3 "registered hooks after two builds"
 }
 t "setup: registers hooks once, with the right matchers" setup_registers_hooks
 
