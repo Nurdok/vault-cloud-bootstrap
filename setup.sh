@@ -21,6 +21,8 @@ set -euo pipefail
 #   VAULT_SEED_REPO  git backup of the vault to seed from. Empty skips seeding.
 #   (git auth)       the bootstrap passes its GitHub token, if any, to git
 #                    through GIT_CONFIG_*, which the seed clone inherits.
+#   OBSIDIAN_HEADLESS_VERSION  obsidian-headless version to install. Empty
+#                    uses the pinned default below.
 #   CLAUDE_MD_PATH   where the session CLAUDE.md goes (override for testing).
 #
 # Seeding:
@@ -56,6 +58,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGE_KEY="${AGE_KEY:-}"
 VAULT_SEED_REPO="${VAULT_SEED_REPO:-}"
 CLAUDE_MD_PATH="${CLAUDE_MD_PATH:-/home/user/CLAUDE.md}"
+# obsidian-headless is a 0.0.x beta that syncs the real vault, and the cached
+# environment is rebuilt about weekly. Pin the version so a new release only
+# lands when this line (or the bootstrap's override) changes.
+OB_VERSION_DEFAULT=0.0.14
+OB_VERSION="${OBSIDIAN_HEADLESS_VERSION:-$OB_VERSION_DEFAULT}"
 export GIT_TERMINAL_PROMPT=0   # an unreachable repo fails fast instead of asking for a login
 
 # Diagnostics for later sessions: the build output only shows in the UI when the
@@ -102,11 +109,15 @@ git config --show-origin --name-only --get-regexp '^(http|url|credential)\.' 2>/
 
 # 1. Install tooling eagerly (cached). `age` cannot be apt-installed at session
 #    time (hooks have no root), so it must land here.
-command -v ob  >/dev/null 2>&1 || npm install -g --no-fund --no-update-notifier obsidian-headless
+ob_installed() { npm ls -g --depth=0 obsidian-headless 2>/dev/null | grep -o 'obsidian-headless@[^ ]*' | cut -d@ -f2; }
+if ! command -v ob >/dev/null 2>&1 || [ "$(ob_installed)" != "$OB_VERSION" ]; then
+  npm install -g --no-fund --no-update-notifier "obsidian-headless@$OB_VERSION"
+fi
 command -v age >/dev/null 2>&1 || { apt-get update && apt-get install -y age; } \
   || echo "[vault-cloud-bootstrap] age install FAILED; sessions cannot decrypt .env files."
 status node "$(node --version 2>/dev/null || echo missing)"
-status ob "$(npm ls -g --depth=0 obsidian-headless 2>/dev/null | grep -o 'obsidian-headless@[^ ]*' || echo missing)"
+status ob "obsidian-headless@$(ob_installed || true)"
+status ob_pinned "$OB_VERSION"
 status age "$(age --version 2>/dev/null || echo missing)"
 # The hooks run ob with this flag; an older Node refuses to start with it.
 if node --use-env-proxy -e 0 >/dev/null 2>&1; then
