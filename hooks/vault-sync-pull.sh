@@ -13,6 +13,7 @@ if [ "${1:-}" = "--worker" ]; then
   VAULT_DIR="$HOME/vault"
   SEED_MARKER="$VAULT_DIR/.seeded-from-git"
   OB_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless"
+  SYNC_MODE="${VAULT_SYNC_MODE:-bidirectional}"
   export NODE_OPTIONS="--use-env-proxy --disable-warning=UNDICI-EHPA"
 
   # One worker per session. A second SessionStart (resume, or the hook firing
@@ -73,6 +74,8 @@ if [ "${1:-}" = "--worker" ]; then
     # A git-seeded vault has no sync history: reconcile download-only first.
     if [ -e "$SEED_MARKER" ]; then
       ob sync-config --path "$VAULT_DIR" --mode mirror-remote >>"$LOG" 2>&1 || return 1
+    else
+      ob sync-config --path "$VAULT_DIR" --mode "$SYNC_MODE" >>"$LOG" 2>&1 || return 1
     fi
     local start pid
     start=$(wc -l <"$LOG")
@@ -95,10 +98,10 @@ if [ "${1:-}" = "--worker" ]; then
     if attempt; then
       ok=1; log "sync ok on attempt $i"
       if [ -e "$SEED_MARKER" ]; then
-        if ob sync-config --path "$VAULT_DIR" --mode bidirectional >>"$LOG" 2>&1; then
-          rm -f "$SEED_MARKER"; log "git seed reconciled; back to bidirectional sync"
+        if ob sync-config --path "$VAULT_DIR" --mode "$SYNC_MODE" >>"$LOG" 2>&1; then
+          rm -f "$SEED_MARKER"; log "git seed reconciled; sync mode is now $SYNC_MODE"
         else
-          log "could not switch back to bidirectional; vault stays download-only"
+          log "could not switch to $SYNC_MODE; vault stays download-only"
         fi
       fi
       break
@@ -155,6 +158,15 @@ else
   done
   [ -n "$missing" ] || echo "[vault-sync] auth: account email and password" >>"$LOG"
 fi
+case "${VAULT_SYNC_MODE:-bidirectional}" in
+  bidirectional) ;;
+  pull-only|mirror-remote)
+    echo "[vault-sync] VAULT_SYNC_MODE=$VAULT_SYNC_MODE: the vault is read-only in this environment; edits are not pushed" >>"$LOG" ;;
+  *)
+    # Fail closed: a typo must not silently become a two-way sync.
+    echo "[vault-sync] VAULT_SYNC_MODE='$VAULT_SYNC_MODE' is not bidirectional, pull-only or mirror-remote; vault sync skipped." >>"$LOG"
+    exit 0 ;;
+esac
 if [ -n "$missing" ]; then
   {
     echo "[vault-sync] not set in the session environment:$missing; vault sync skipped."

@@ -61,6 +61,9 @@ instructions to `templates/user-claude.md`.
    - `OBSIDIAN_MFA` (optional): only with the password login, if the account
      uses 2FA. A 2FA code expires within a minute, so this suits a one-off test
      at best.
+   - `VAULT_SYNC_MODE` (optional): `bidirectional` (default), or `pull-only`
+     or `mirror-remote` for a read-only vault. See
+     [Before you let an agent write to your vault](#before-you-let-an-agent-write-to-your-vault).
    - `OBSIDIAN_DEVICE_NAME` (optional): how sessions appear in Sync's version
      history. Defaults to `claude-cloud`.
 3. Paste [`bootstrap.sh`](bootstrap.sh) as the environment's **Setup script**
@@ -79,6 +82,29 @@ instructions to `templates/user-claude.md`.
 To roll out a change, push it to the setup repo, then update `SETUP_COMMIT` in
 the pasted bootstrap. The build is cached, so a push alone changes nothing; the
 edit to the setup script is what triggers a rebuild.
+
+## Before you let an agent write to your vault
+
+By default the sync is two-way. Whatever the agent does under `~/vault`,
+including a mistaken bulk edit or deletion, reaches all your devices at the end
+of that turn.
+
+- **Keep a backup that Obsidian Sync cannot touch.** Sync's version history is
+  the only built-in undo, and its retention is limited. A git backup of the
+  vault (the same one `VAULT_SEED_REPO` can seed from) or any file-level backup
+  on one of your machines covers what it does not.
+- **Start read-only.** Set `VAULT_SYNC_MODE=pull-only` in the environment and
+  sessions download the vault but never upload: local edits stay in the session
+  and the push hook does nothing. `mirror-remote` additionally reverts local
+  edits at each session start. Remove the variable when you want sessions to
+  write.
+- **Vault content reaches the agent.** The installed `CLAUDE.md` tells the
+  agent to read project notes, and a vault usually holds text you did not
+  write, such as web clippings. The template tells the agent to treat notes as
+  reference material and not to follow instructions found in them. That lowers
+  the risk of a planted instruction; it does not remove it. The stronger
+  controls are the ones outside the agent: an auth token instead of the account
+  password, and the environment's network allowlist.
 
 ## Authentication
 

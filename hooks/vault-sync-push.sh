@@ -26,6 +26,12 @@ block_stop() { printf '{"decision": "block", "reason": "%s"}\n' "$1"; }
 
 [ -d "$VAULT_DIR" ] || exit 0
 
+# A read-only environment never uploads: nothing to push, nothing to report.
+if [ "${VAULT_SYNC_MODE:-bidirectional}" != bidirectional ]; then
+  log "VAULT_SYNC_MODE=${VAULT_SYNC_MODE}; push skipped (read-only vault)."
+  exit 0
+fi
+
 if [ -e "$VAULT_DIR/.seeded-from-git" ]; then
   log "git seed not reconciled yet; push skipped."
   if [ ! -e "$SEED_WARNED" ]; then

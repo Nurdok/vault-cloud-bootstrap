@@ -17,7 +17,7 @@ fresh() {   # new HOME with the hooks installed, stub ob first on PATH
   export OBSIDIAN_EMAIL=me@example.com OBSIDIAN_PASSWORD=pw
   export OBSIDIAN_VAULT_NAME=Vault OBSIDIAN_VAULT_PASSWORD=vpw
   export VAULT_SYNC_RETRY_DELAY=0
-  unset VAULT_PUSH_TIMEOUT
+  unset VAULT_PUSH_TIMEOUT VAULT_SYNC_MODE
   HOOKS="$HOME/.claude/hooks"; PULL_LOG="$HOOKS/vault-sync-pull.log"; PUSH_LOG="$HOOKS/vault-sync-push.log"
 }
 worker_running() { pgrep -f "$HOOKS/vault-sync-pull.sh --worker" >/dev/null 2>&1; }
@@ -236,6 +236,40 @@ push_never_set_up() {
   has "$T/push.out" 'never set up for sync'
 }
 t "push: reports a vault that was never set up" push_never_set_up
+
+# ---- read-only mode -------------------------------------------------------------
+mode_pull_only() {
+  export VAULT_SYNC_MODE=pull-only
+  pull; push
+  has "$PULL_LOG" 'read-only in this environment'; has "$PULL_LOG" 'sync ok on attempt 1'
+  eq "$(sort -u "$STUB_DIR/synced-modes")" pull-only "modes synced in"
+  eq "$(stub_count syncs)" 1 "syncs (the push hook must not sync)"
+  has "$PUSH_LOG" 'push skipped \(read-only vault\)'; eq "$(cat "$T/push.out")" "" "hook output"
+}
+t "mode: pull-only never uploads" mode_pull_only
+
+mode_seed_then_pull_only() {
+  export VAULT_SYNC_MODE=pull-only
+  mkdir -p "$HOME/vault"; touch "$HOME/vault/.seeded-from-git"
+  pull
+  eq "$(head -1 "$STUB_DIR/synced-modes")" mirror-remote "mode of the first sync"
+  eq "$(cat "$STUB_DIR/vault-state/mode")" pull-only "mode after reconcile"
+}
+t "mode: a seeded vault ends in the configured mode" mode_seed_then_pull_only
+
+mode_default_bidirectional() {
+  pull
+  eq "$(sort -u "$STUB_DIR/synced-modes")" bidirectional "modes synced in"
+}
+t "mode: default is bidirectional" mode_default_bidirectional
+
+mode_invalid() {
+  export VAULT_SYNC_MODE=readonly
+  pull
+  has "$PULL_LOG" "VAULT_SYNC_MODE='readonly' is not"
+  eq "$(stub_count syncs)" 0 "syncs"
+}
+t "mode: an unknown mode syncs nothing" mode_invalid
 
 # ---- pull worker concurrency ----------------------------------------------------
 pull_single_worker() {

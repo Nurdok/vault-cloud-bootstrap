@@ -32,6 +32,7 @@ elif [ -n "${OBSIDIAN_EMAIL:-}" ] && [ -n "${OBSIDIAN_PASSWORD:-}" ]; then
 else
   echo "  auth method: NONE (set OBSIDIAN_AUTH_TOKEN, or OBSIDIAN_EMAIL and OBSIDIAN_PASSWORD)"
 fi
+echo "  sync mode: ${VAULT_SYNC_MODE:-bidirectional (default)}"
 echo "  project dir: $ROOT"
 
 section "Tools"
