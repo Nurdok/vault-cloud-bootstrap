@@ -70,7 +70,7 @@ if [ "${1:-}" = "--worker" ]; then
       break
     fi
     log "sync attempt $i failed"
-    if [ "$i" -lt 10 ]; then sleep 60; fi
+    if [ "$i" -lt 10 ]; then sleep "${VAULT_SYNC_RETRY_DELAY:-60}"; fi
   done
 
   if [ "$ok" = 1 ] && [ ! -f "$EPHEMERAL" ]; then
