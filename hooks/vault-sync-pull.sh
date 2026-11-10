@@ -25,14 +25,38 @@ if [ "${1:-}" = "--worker" ]; then
   # True if `ob sync` printed "Fully synced" after log line $1.
   synced_since() { awk -v s="$1" 'NR > s && /^Fully synced/ { f = 1 } END { exit !f }' "$LOG"; }
 
+  # Credentials never go on a command line, where any process in the VM could
+  # read them from the process list: ob reads a password from stdin when the
+  # flag is omitted, and reads OBSIDIAN_AUTH_TOKEN from the environment itself.
+  # The timeout covers ob waiting forever for a 2FA code nobody can type.
+  login() {
+    printf '%s' "$OBSIDIAN_PASSWORD" | timeout 60 ob login --email "$OBSIDIAN_EMAIL" \
+      ${OBSIDIAN_MFA:+--mfa "$OBSIDIAN_MFA"} >>"$LOG" 2>&1
+  }
+  setup() {
+    printf '%s' "${OBSIDIAN_VAULT_PASSWORD:-}" | timeout 60 ob sync-setup --path "$VAULT_DIR" \
+      --vault "$OBSIDIAN_VAULT_NAME" --device-name "${OBSIDIAN_DEVICE_NAME:-claude-cloud}" >>"$LOG" 2>&1
+  }
+  # ob exits 2 when it rejects a credential (account password, 2FA code, vault
+  # password) and 3 when the vault does not exist. Retrying those ten times a
+  # session invites a lockout and cannot succeed, so the worker gives up after
+  # MAX_REJECTIONS of them; everything else (network, proxy) is retried.
+  MAX_REJECTIONS=2
+  rejections=0
+  rejected() {   # rejected <step> <exit code>: count it if ob refused the credentials
+    case "$2" in
+      2|3) rejections=$((rejections + 1)); log "$1 was rejected (ob exit $2); check the credentials and vault name" ;;
+    esac
+  }
+
   attempt() {
-    if [ ! -f "$OB_CONFIG_DIR/auth_token" ]; then
-      ob login --email "$OBSIDIAN_EMAIL" --password "$OBSIDIAN_PASSWORD" \
-        ${OBSIDIAN_MFA:+--mfa "$OBSIDIAN_MFA"} >>"$LOG" 2>&1 || return 1
+    local rc=0
+    # OBSIDIAN_AUTH_TOKEN, when set, replaces the account login entirely.
+    if [ -z "${OBSIDIAN_AUTH_TOKEN:-}" ] && [ ! -f "$OB_CONFIG_DIR/auth_token" ]; then
+      login || { rc=$?; rejected "login" "$rc"; return 1; }
     fi
     if ! ob sync-status --path "$VAULT_DIR" >/dev/null 2>&1; then
-      ob sync-setup --path "$VAULT_DIR" \
-        --vault "$OBSIDIAN_VAULT_NAME" --password "$OBSIDIAN_VAULT_PASSWORD" >>"$LOG" 2>&1 || return 1
+      setup || { rc=$?; rejected "vault setup" "$rc"; return 1; }
       ob sync-config --path "$VAULT_DIR" \
         --file-types image,audio,video,pdf,unsupported >>"$LOG" 2>&1 || return 1
     fi
@@ -40,7 +64,7 @@ if [ "${1:-}" = "--worker" ]; then
     if [ -e "$SEED_MARKER" ]; then
       ob sync-config --path "$VAULT_DIR" --mode mirror-remote >>"$LOG" 2>&1 || return 1
     fi
-    local start pid rc=0
+    local start pid
     start=$(wc -l <"$LOG")
     timeout 300 ob sync --path "$VAULT_DIR" > >(quiet >>"$LOG") 2>&1 & pid=$!
     # ob can sit idle after "Fully synced" following a large download; treat that
@@ -70,6 +94,10 @@ if [ "${1:-}" = "--worker" ]; then
       break
     fi
     log "sync attempt $i failed"
+    if [ "$rejections" -ge "$MAX_REJECTIONS" ]; then
+      log "giving up: credentials rejected $rejections times; not retrying, to avoid locking the account"
+      break
+    fi
     if [ "$i" -lt 10 ]; then sleep "${VAULT_SYNC_RETRY_DELAY:-60}"; fi
   done
 
@@ -80,7 +108,7 @@ if [ "${1:-}" = "--worker" ]; then
       log "decrypt step failed"
     fi
   else
-    log "all 10 sync attempts failed; no .env injected this session"
+    log "vault sync failed; no .env injected this session"
   fi
   # EXIT trap removes "$EPHEMERAL" here.
   exit 0
@@ -98,15 +126,27 @@ ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
     "| seed marker $([ -e "$HOME/vault/.seeded-from-git" ] && echo present || echo absent)"
   echo "[vault-sync] for a full report run ~/.claude/hooks/vault-doctor.sh"
 } >>"$LOG"
+# Needs the vault name plus either an auth token (preferred: it can be revoked
+# and is not the account password) or the account email and password.
+# OBSIDIAN_VAULT_PASSWORD is only needed for an end-to-end encrypted vault.
 missing=""
-for v in OBSIDIAN_EMAIL OBSIDIAN_PASSWORD OBSIDIAN_VAULT_NAME OBSIDIAN_VAULT_PASSWORD; do
-  [ -n "${!v:-}" ] || missing="$missing $v"
-done
+[ -n "${OBSIDIAN_VAULT_NAME:-}" ] || missing="$missing OBSIDIAN_VAULT_NAME"
+if [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ]; then
+  echo "[vault-sync] auth: OBSIDIAN_AUTH_TOKEN (account email and password are not used)" >>"$LOG"
+else
+  for v in OBSIDIAN_EMAIL OBSIDIAN_PASSWORD; do
+    [ -n "${!v:-}" ] || missing="$missing $v"
+  done
+  [ -n "$missing" ] || echo "[vault-sync] auth: account email and password" >>"$LOG"
+fi
 if [ -n "$missing" ]; then
-  echo "[vault-sync] not set in the session environment:$missing; vault sync skipped." >>"$LOG"
+  {
+    echo "[vault-sync] not set in the session environment:$missing; vault sync skipped."
+    echo "[vault-sync] set OBSIDIAN_VAULT_NAME and either OBSIDIAN_AUTH_TOKEN or OBSIDIAN_EMAIL + OBSIDIAN_PASSWORD."
+  } >>"$LOG"
   exit 0
 fi
 
 nohup bash "$SELF" --worker "$ROOT" >>"$LOG" 2>&1 &
-echo "[vault-sync] background sync started (up to 10 tries, 60s apart)." >>"$LOG"
+echo "[vault-sync] background sync started (up to 10 tries, ${VAULT_SYNC_RETRY_DELAY:-60}s apart)." >>"$LOG"
 exit 0

@@ -46,10 +46,12 @@ case "$cmd" in
     [ -f "$state/setup" ] || { echo "No sync configuration found for $path" >&2; exit 3; }
     echo "Sync Configuration:" ;;
   sync-setup)
-    [ "$(token)" = "${STUB_TOKEN:-good-token}" ] || { echo 'No account logged in. Run "ob login" first.' >&2; exit 2; }
+    [ -n "$(token)" ] || { echo 'No account logged in. Run "ob login" first.' >&2; exit 2; }
+    [ "$(token)" = "${STUB_TOKEN:-good-token}" ] || { echo "Failed to list vaults: Error" >&2; exit 1; }
+    [ "$vault" = "${STUB_VAULT:-Vault}" ] || { echo "Vault \"$vault\" not found." >&2; exit 3; }
     count setups >/dev/null
     [ "$has_password" = 1 ] || password="$(cat)"
-    if [ "$password" != "${STUB_VAULT_PASSWORD:-vpw}" ]; then echo "Failed to validate password." >&2; exit 2; fi
+    if [ "$password" != "${STUB_VAULT_PASSWORD-vpw}" ]; then echo "Failed to validate password." >&2; exit 2; fi
     mkdir -p "$state"; : >"$state/setup"; echo bidirectional >"$state/mode"
     echo "Setting up..." ;;
   sync-config)
