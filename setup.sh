@@ -18,6 +18,8 @@ set -euo pipefail
 # Inputs (environment):
 #   AGE_KEY          from the bootstrap; never committed. Empty disables .env
 #                    decryption.
+#   SECRET_NAME_PATTERN  glob of file names the decrypt step may write
+#                    (default: .env and .env.*).
 #   VAULT_SEED_REPO  git backup of the vault to seed from. Empty skips seeding.
 #   (git auth)       the bootstrap passes its GitHub token, if any, to git
 #                    through GIT_CONFIG_*, which the seed clone inherits.
@@ -49,13 +51,18 @@ set -euo pipefail
 #   worker retries sync up to 10 times, 60s apart. On a successful sync it
 #   materializes THIS project's secrets (every file under _env/<repo>/ in the
 #   vault) and then removes .decrypt.sh via an EXIT trap (which also fires if
-#   all retries fail, so the key never outlives the worker). Until then the key
+#   all retries fail, so the key never outlives the worker). When no worker
+#   starts at all (the session has no Obsidian credentials, or an invalid sync
+#   mode), the launcher removes .decrypt.sh itself. Until then the key
 #   is on disk, readable by the session's agent like any other file: this design
 #   keeps the key out of the repo and the environment variables, it does not
 #   hide it from a session that goes looking.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGE_KEY="${AGE_KEY:-}"
+# Extended glob for the decoded names of secrets the worker may write into a
+# project: .env and .env.<anything>, but not .envrc (direnv executes that).
+SECRET_NAME_PATTERN="${SECRET_NAME_PATTERN:-@(.env|.env.*)}"
 VAULT_SEED_REPO="${VAULT_SEED_REPO:-}"
 CLAUDE_MD_PATH="${CLAUDE_MD_PATH:-/home/user/CLAUDE.md}"
 # obsidian-headless is a 0.0.x beta that syncs the real vault, and the cached
@@ -164,6 +171,7 @@ install -m 755 "$HERE/hooks/vault-sync-pull.sh" "$HERE/hooks/vault-sync-push.sh"
 #    substituted into the template here and nowhere else.
 if [ -n "$AGE_KEY" ]; then
   tpl="$(<"$HERE/hooks/decrypt.sh")"
+  tpl="${tpl//__NAME_PATTERN__/"$SECRET_NAME_PATTERN"}"
   (umask 077; printf '%s\n' "${tpl//__AGE_KEY__/"$AGE_KEY"}" > ~/.claude/hooks/.decrypt.sh)
   chmod 700 ~/.claude/hooks/.decrypt.sh
   status decrypt installed

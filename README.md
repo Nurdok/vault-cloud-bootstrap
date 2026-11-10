@@ -181,8 +181,19 @@ holds the encrypted secrets.
 
 The worker looks for `~/vault/_env/<repo>/`, where `<repo>` is the name of the
 session's repository (from its `origin` URL). It decrypts every `*.age` file
-there into the project directory, and never overwrites a file that already
-exists.
+there into the project directory, with these limits:
+
+- Only names that decode to `.env` or `.env.<something>` are written
+  (`SECRET_NAME_PATTERN` in the bootstrap widens this). Encrypting to an age
+  recipient needs only the public key, so anyone who can write to the vault,
+  including an agent in another session, can add a file under `_env/`. The
+  filter keeps such a file from landing as `.mcp.json`, `.envrc`, a `Makefile`
+  or anything else a tool would load or run by itself.
+- It never overwrites a file that already exists, and never writes through a
+  symlink.
+- Each file it writes is added to the clone's `.git/info/exclude`, so a later
+  `git add -A` cannot commit a decrypted secret. The repository itself is not
+  changed.
 
 Obsidian Sync skips dotfiles, so a leading dot is spelled `__dot__` in the file
 name:
@@ -197,7 +208,8 @@ syncing for all file types.
 **What this protects, and what it does not.** The age key never goes into a
 repository or an environment variable. Instead, `setup.sh` bakes it into
 `~/.claude/hooks/.decrypt.sh` in the cached image, and the worker deletes that
-script once it has run. Until then, the key is a file the session's agent could
+script once it has run, or the launcher deletes it at session start when no
+sync is going to run. Until then, the key is a file the session's agent could
 read. This keeps secrets out of git and out of the environment variables. It
 does not hide them from an agent that goes looking.
 

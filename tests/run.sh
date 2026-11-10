@@ -351,6 +351,57 @@ PY
 }
 t "setup: registers hooks once, with the right matchers" setup_registers_hooks
 
+# ---- per-project secrets --------------------------------------------------------
+with_secrets() {   # build with an age key, and give the vault some _env files for this project
+  export STUB_OB_INSTALLED=0.0.14
+  AGE_KEY=AGE-SECRET-KEY-TEST build || bad "setup.sh failed"
+  git -C "$CLAUDE_PROJECT_DIR" init -q
+  local d="$HOME/vault/_env/project" f; mkdir -p "$d"
+  for f in "$@"; do echo "secret of $f" >"$d/$f.age"; done
+}
+
+secrets_decrypt() {
+  with_secrets __dot__env __dot__env.local
+  pull
+  eq "$(cat "$CLAUDE_PROJECT_DIR/.env" 2>/dev/null)" "secret of __dot__env" ".env content"
+  [ -f "$CLAUDE_PROJECT_DIR/.env.local" ] && ok || bad ".env.local not written"
+  has "$CLAUDE_PROJECT_DIR/.git/info/exclude" '^/\.env$'; has "$CLAUDE_PROJECT_DIR/.git/info/exclude" '^/\.env\.local$'
+  eq "$(git -C "$CLAUDE_PROJECT_DIR" status --porcelain)" "" "git status (secrets must be ignored)"
+  [ ! -e "$HOOKS/.decrypt.sh" ] && ok || bad ".decrypt.sh left on disk after the worker"
+  hasnt "$HOME/.claude/vault-cloud-bootstrap/build.log" 'AGE-SECRET-KEY-TEST'
+}
+t "secrets: .env files are decrypted and git-ignored" secrets_decrypt
+
+secrets_name_filter() {
+  with_secrets __dot__env __dot__mcp.json Makefile __dot__envrc __dot__env.example
+  pull
+  [ -f "$CLAUDE_PROJECT_DIR/.env" ] && ok || bad ".env not written"
+  local f
+  for f in .mcp.json Makefile .envrc .env.example; do
+    [ ! -e "$CLAUDE_PROJECT_DIR/$f" ] && ok || bad "$f was written"
+  done
+  has "$PULL_LOG" "skip \.mcp\.json \(name does not match"
+}
+t "secrets: only names matching the pattern are written" secrets_name_filter
+
+secrets_no_symlink() {
+  with_secrets __dot__env
+  ln -s "$T/outside" "$CLAUDE_PROJECT_DIR/.env"
+  pull
+  [ ! -e "$T/outside" ] && ok || bad "wrote through a symlink to outside the project"
+  has "$PULL_LOG" 'skip existing \.env'
+}
+t "secrets: never writes through a symlink" secrets_no_symlink
+
+secrets_key_removed_without_worker() {
+  with_secrets __dot__env
+  unset OBSIDIAN_PASSWORD
+  pull
+  [ ! -e "$HOOKS/.decrypt.sh" ] && ok || bad "age key left on disk although no worker ran"
+  has "$PULL_LOG" 'removed \.decrypt\.sh'
+}
+t "secrets: the key is removed when no sync can run" secrets_key_removed_without_worker
+
 # ---- static checks ------------------------------------------------------------
 static() {
   local f

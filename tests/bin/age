@@ -1,3 +1,8 @@
 #!/usr/bin/env bash
-# Stub age for tests/run.sh: only answers --version, so setup.sh skips apt.
-echo "v0.0.0-stub"
+# Stub age for tests/run.sh. `--version` lets setup.sh skip apt. `-d -i KEY FILE`
+# "decrypts" by printing FILE, and fails unless the identity is the test key.
+case "$1" in
+  -d) grep -qx 'AGE-SECRET-KEY-TEST' "$3" || { echo "age: no identity matched" >&2; exit 1; }
+      cat "$4" ;;
+  *) echo "v0.0.0-stub" ;;
+esac
