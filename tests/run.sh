@@ -13,6 +13,7 @@ fresh() {   # new HOME with the hooks installed, stub ob first on PATH
   install -m 755 "$REPO"/hooks/vault-*.sh "$HOME/.claude/hooks/"
   export PATH="$REPO/tests/bin:$ORIG_PATH"
   unset XDG_CONFIG_HOME OBSIDIAN_MFA OBSIDIAN_AUTH_TOKEN
+  unset STUB_LOGIN_NETWORK_FAILS
   unset STUB_PASSWORD STUB_VAULT_PASSWORD STUB_TOKEN STUB_MFA STUB_SYNC_FAILS STUB_SYNC_SECONDS STUB_SYNC_HANG
   export OBSIDIAN_EMAIL=me@example.com OBSIDIAN_PASSWORD=pw
   export OBSIDIAN_VAULT_NAME=Vault OBSIDIAN_VAULT_PASSWORD=vpw
@@ -129,6 +130,14 @@ auth_wrong_password() {
   has "$PULL_LOG" 'giving up: credentials rejected 2 times'
 }
 t "auth: a rejected password is tried twice, not ten times" auth_wrong_password
+
+auth_login_network_failure() {
+  export STUB_LOGIN_NETWORK_FAILS=3
+  pull
+  has "$PULL_LOG" 'login failed before reaching Obsidian \(network\); will retry'
+  has "$PULL_LOG" 'sync ok on attempt 4'; hasnt "$PULL_LOG" 'giving up'
+}
+t "auth: a login that fails on the network keeps its retries" auth_login_network_failure
 
 auth_wrong_vault_password() {
   export OBSIDIAN_VAULT_PASSWORD=wrong

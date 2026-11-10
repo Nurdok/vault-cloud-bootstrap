@@ -134,7 +134,9 @@ with 2FA.
 Either way, passwords are passed to `ob` on stdin, never as command-line
 arguments. If `ob` rejects a credential (account password, 2FA code, vault
 password) or cannot find the vault, the worker stops after two rejections
-instead of retrying ten times, so a typo cannot lock the account.
+instead of retrying ten times, so a typo cannot lock the account. A login that
+fails because the request never reached Obsidian (proxy, DNS, timeout) is not
+counted as a rejection and keeps the full ten retries.
 
 ## When edits are pushed, and when they are not
 

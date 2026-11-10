@@ -27,7 +27,8 @@ if [ "${1:-}" = "--worker" ]; then
 
   # The key-bearing script never outlives this worker, on any exit path
   # (normal return after success, all-retries-failed, or a caught signal).
-  trap 'rm -f "$EPHEMERAL"' EXIT INT TERM
+  STEP_OUT="$(mktemp)"   # output of the last login / setup call
+  trap 'rm -f "$EPHEMERAL" "$STEP_OUT"' EXIT INT TERM
 
   log() { echo "[vault-sync] $(date -Is) $*" >>"$LOG"; }
   # ob prints a Checking and a Downloading line per file; keep the rest.
@@ -42,32 +43,45 @@ if [ "${1:-}" = "--worker" ]; then
   # The timeout covers ob waiting forever for a 2FA code nobody can type.
   login() {
     printf '%s' "$OBSIDIAN_PASSWORD" | timeout 60 ob login --email "$OBSIDIAN_EMAIL" \
-      ${OBSIDIAN_MFA:+--mfa "$OBSIDIAN_MFA"} >>"$LOG" 2>&1
+      ${OBSIDIAN_MFA:+--mfa "$OBSIDIAN_MFA"} >"$STEP_OUT" 2>&1
   }
   setup() {
     printf '%s' "${OBSIDIAN_VAULT_PASSWORD:-}" | timeout 60 ob sync-setup --path "$VAULT_DIR" \
-      --vault "$OBSIDIAN_VAULT_NAME" --device-name "${OBSIDIAN_DEVICE_NAME:-claude-cloud}" >>"$LOG" 2>&1
+      --vault "$OBSIDIAN_VAULT_NAME" --device-name "${OBSIDIAN_DEVICE_NAME:-claude-cloud}" >"$STEP_OUT" 2>&1
   }
   # ob exits 2 when it rejects a credential (account password, 2FA code, vault
   # password) and 3 when the vault does not exist. Retrying those ten times a
   # session invites a lockout and cannot succeed, so the worker gives up after
-  # MAX_REJECTIONS of them; everything else (network, proxy) is retried.
+  # MAX_REJECTIONS of them. But `ob login` also exits 2 when the request never
+  # reached Obsidian (proxy, DNS, timeout), and that must keep its retries: a
+  # failure whose output shows a transport error is not counted.
   MAX_REJECTIONS=2
   rejections=0
-  rejected() {   # rejected <step> <exit code>: count it if ob refused the credentials
-    case "$2" in
-      2|3) rejections=$((rejections + 1)); log "$1 was rejected (ob exit $2); check the credentials and vault name" ;;
+  NETWORK_ERRORS='fetch failed|UND_ERR|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|Proxy response|getaddrinfo|certificate'
+  step() {   # step <name> <function>: run it, keep its output in the log, classify a failure
+    local rc=0
+    "$2" || rc=$?
+    cat "$STEP_OUT" >>"$LOG"
+    [ "$rc" -ne 0 ] || return 0
+    case "$rc" in
+      2|3)
+        if grep -qE "$NETWORK_ERRORS" "$STEP_OUT"; then
+          log "$1 failed before reaching Obsidian (network); will retry"
+        else
+          rejections=$((rejections + 1))
+          log "$1 was rejected (ob exit $rc); check the credentials and vault name"
+        fi ;;
     esac
+    return 1
   }
 
   attempt() {
-    local rc=0
     # OBSIDIAN_AUTH_TOKEN, when set, replaces the account login entirely.
     if [ -z "${OBSIDIAN_AUTH_TOKEN:-}" ] && [ ! -f "$OB_CONFIG_DIR/auth_token" ]; then
-      login || { rc=$?; rejected "login" "$rc"; return 1; }
+      step "login" login || return 1
     fi
     if ! ob sync-status --path "$VAULT_DIR" >/dev/null 2>&1; then
-      setup || { rc=$?; rejected "vault setup" "$rc"; return 1; }
+      step "vault setup" setup || return 1
       ob sync-config --path "$VAULT_DIR" \
         --file-types image,audio,video,pdf,unsupported >>"$LOG" 2>&1 || return 1
     fi
@@ -77,7 +91,7 @@ if [ "${1:-}" = "--worker" ]; then
     else
       ob sync-config --path "$VAULT_DIR" --mode "$SYNC_MODE" >>"$LOG" 2>&1 || return 1
     fi
-    local start pid
+    local start pid rc=0
     start=$(wc -l <"$LOG")
     timeout 300 ob sync --path "$VAULT_DIR" > >(quiet >>"$LOG" 9>&-) 2>&1 9>&- & pid=$!
     # ob can sit idle after "Fully synced" following a large download; treat that
