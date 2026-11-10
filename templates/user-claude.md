@@ -17,7 +17,7 @@ The vault is the user's own, and it syncs to all their devices. An edit, rename 
 - Never run bulk commands over `~/vault/` (`rm -r`, `find ... -delete`, `sed -i` across files, `git clean`, a formatter) and never touch `~/vault/.obsidian/`.
 - If the environment variable `VAULT_SYNC_MODE` is `pull-only` or `mirror-remote`, the vault is read-only here: edits are not pushed. Tell the user instead of editing.
 
-Edits are pushed back to Obsidian Sync at the end of every turn. If a push fails, you are told when the turn ends: pass that on to the user plainly, because edits that are never pushed are lost when the session ends.
+Edits are pushed back to Obsidian Sync when a turn completes, and only then. So never end a turn with a note half-edited: whatever is under `~/vault/` at that moment reaches every device. Finish the edit, or put the note back as it was, before you stop to ask a question or report. The user prefers an edit that does not sync to a faulty or partial one that does, so when in doubt, do not write. If a push fails, you are told when the turn ends: pass that on to the user plainly, because edits that are never pushed are lost when the session ends.
 
 ## When something is wrong
 

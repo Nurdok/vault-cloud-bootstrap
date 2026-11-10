@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Stop / SessionEnd hook: pushes vault edits to Obsidian Sync.
+# Stop hook: pushes vault edits to Obsidian Sync.
+#
+# Edits are pushed only when a turn completes. Nothing syncs while a turn is
+# running, and nothing syncs when a session ends or is cut off mid-turn: an
+# edit that fails to reach the vault is preferred to a half-finished one that
+# does. The hook therefore refuses to run for any event other than Stop.
 #
 # A push that does not happen is the one way this setup loses work (the VM is
 # discarded later, with the edits in it), so a failure is never silent: the
@@ -25,6 +30,11 @@ warn_user() { [ "$EVENT" = Stop ] && printf '{"systemMessage": "%s"}\n' "$1"; re
 block_stop() { printf '{"decision": "block", "reason": "%s"}\n' "$1"; }
 
 [ -d "$VAULT_DIR" ] || exit 0
+
+if [ "$EVENT" != Stop ]; then
+  log "called for $EVENT, not Stop; push skipped (edits are pushed only when a turn completes)."
+  exit 0
+fi
 
 # A read-only environment never uploads: nothing to push, nothing to report.
 if [ "${VAULT_SYNC_MODE:-bidirectional}" != bidirectional ]; then
