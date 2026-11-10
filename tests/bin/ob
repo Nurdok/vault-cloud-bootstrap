@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Stub of the obsidian-headless CLI for tests/run.sh. It mimics the parts of
+# `ob` (0.0.14) the hooks rely on: exit codes, the auth token lookup order
+# (OBSIDIAN_AUTH_TOKEN, then the auth_token file), passwords read from stdin
+# when the flag is omitted, the per-vault lock, and the "Fully synced" line.
+#
+# Behaviour is driven by STUB_* variables; every call is appended to
+# $STUB_DIR/calls with its full argv, so tests can assert on what was passed.
+set -uo pipefail
+: "${STUB_DIR:?STUB_DIR must be set}"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless"
+mkdir -p "$STUB_DIR" "$CONF"
+printf '%s\n' "$*" >>"$STUB_DIR/calls"
+
+cmd="${1:-}"; shift || true
+email="" password="" mfa="" path="." vault="" mode="" has_password=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --email) email="$2"; shift 2 ;;
+    --password) password="$2"; has_password=1; shift 2 ;;
+    --mfa) mfa="$2"; shift 2 ;;
+    --path) path="$2"; shift 2 ;;
+    --vault) vault="$2"; shift 2 ;;
+    --mode) mode="$2"; shift 2 ;;
+    --file-types|--device-name|--conflict-strategy) shift 2 ;;
+    *) shift ;;
+  esac
+done
+token() { if [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ]; then echo "$OBSIDIAN_AUTH_TOKEN"; else cat "$CONF/auth_token" 2>/dev/null; fi; }
+count() { local f="$STUB_DIR/$1" n; n=$(cat "$f" 2>/dev/null || echo 0); echo $((n + 1)) >"$f"; echo $((n + 1)); }
+state="$STUB_DIR/vault-state"
+
+case "$cmd" in
+  login)
+    count logins >/dev/null
+    if [ -z "$email" ] && [ "$has_password" = 0 ] && [ -n "$(token)" ]; then
+      if [ "$(token)" = "${STUB_TOKEN:-good-token}" ]; then echo "Logged in as Test (test@example.com)"; exit 0; fi
+    fi
+    [ "$has_password" = 1 ] || password="$(cat)"
+    if [ "$password" != "${STUB_PASSWORD:-pw}" ] || [ "$mfa" != "${STUB_MFA:-}" ]; then
+      echo "Login failed: Error" >&2; exit 2
+    fi
+    echo "${STUB_TOKEN:-good-token}" >"$CONF/auth_token"
+    echo "Logged in as Test ($email)" ;;
+  sync-status)
+    [ -f "$state/setup" ] || { echo "No sync configuration found for $path" >&2; exit 3; }
+    echo "Sync Configuration:" ;;
+  sync-setup)
+    [ "$(token)" = "${STUB_TOKEN:-good-token}" ] || { echo 'No account logged in. Run "ob login" first.' >&2; exit 2; }
+    count setups >/dev/null
+    [ "$has_password" = 1 ] || password="$(cat)"
+    if [ "$password" != "${STUB_VAULT_PASSWORD:-vpw}" ]; then echo "Failed to validate password." >&2; exit 2; fi
+    mkdir -p "$state"; : >"$state/setup"; echo bidirectional >"$state/mode"
+    echo "Setting up..." ;;
+  sync-config)
+    [ -f "$state/setup" ] || exit 3
+    if [ -n "$mode" ]; then echo "$mode" >"$state/mode"; echo "$mode" >>"$STUB_DIR/modes"; fi ;;
+  sync)
+    [ "$(token)" = "${STUB_TOKEN:-good-token}" ] || { echo 'No account logged in. Run "ob login" first.' >&2; exit 2; }
+    [ -f "$state/setup" ] || exit 3
+    if ! mkdir "$state/lock" 2>/dev/null; then
+      echo "Another sync instance is already running for this vault." >&2; exit 1
+    fi
+    trap 'rmdir "$state/lock" 2>/dev/null' EXIT
+    trap 'echo "Received signal to shut down..."; exit 0' TERM INT
+    n=$(count syncs)
+    echo "Starting sync:"
+    if [ "$n" -le "${STUB_SYNC_FAILS:-0}" ]; then echo "Sync failed: Error" >&2; exit 1; fi
+    sleep "${STUB_SYNC_SECONDS:-0}" & wait $!
+    cat "$state/mode" >>"$STUB_DIR/synced-modes"
+    echo "Fully synced"
+    if [ -n "${STUB_SYNC_HANG:-}" ]; then sleep "$STUB_SYNC_HANG" & wait $!; fi ;;
+  *) echo "stub ob: unknown command $cmd" >&2; exit 64 ;;
+esac
