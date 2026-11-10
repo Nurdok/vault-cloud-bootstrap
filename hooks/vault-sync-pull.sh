@@ -4,6 +4,7 @@ set -euo pipefail
 HOOKS="$HOME/.claude/hooks"
 LOG="$HOOKS/vault-sync-pull.log"
 SELF="$HOOKS/vault-sync-pull.sh"
+WORKER_LOCK="$HOOKS/.vault-sync-pull.lock"
 
 # ---- background worker re-entry -------------------------------------------
 if [ "${1:-}" = "--worker" ]; then
@@ -13,6 +14,15 @@ if [ "${1:-}" = "--worker" ]; then
   SEED_MARKER="$VAULT_DIR/.seeded-from-git"
   OB_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless"
   export NODE_OPTIONS="--use-env-proxy --disable-warning=UNDICI-EHPA"
+
+  # One worker per session. A second SessionStart (resume, or the hook firing
+  # twice) must not start a competing sync, and must not run the EXIT trap
+  # below, which would delete the decrypt script the first worker still needs.
+  exec 9>"$WORKER_LOCK"
+  if ! flock -n 9; then
+    echo "[vault-sync] $(date -Is) a sync worker is already running; this one exits" >>"$LOG"
+    exit 0
+  fi
 
   # The key-bearing script never outlives this worker, on any exit path
   # (normal return after success, all-retries-failed, or a caught signal).
@@ -66,7 +76,7 @@ if [ "${1:-}" = "--worker" ]; then
     fi
     local start pid
     start=$(wc -l <"$LOG")
-    timeout 300 ob sync --path "$VAULT_DIR" > >(quiet >>"$LOG") 2>&1 & pid=$!
+    timeout 300 ob sync --path "$VAULT_DIR" > >(quiet >>"$LOG" 9>&-) 2>&1 9>&- & pid=$!
     # ob can sit idle after "Fully synced" following a large download; treat that
     # line as success and stop the process ourselves instead of waiting it out.
     while kill -0 "$pid" 2>/dev/null; do
@@ -115,7 +125,13 @@ if [ "${1:-}" = "--worker" ]; then
 fi
 
 # ---- launcher path (runs as the SessionStart hook) ------------------------
+# Leave a running worker and its log alone (see the lock in the worker).
+if [ -e "$WORKER_LOCK" ] && ! flock -n "$WORKER_LOCK" true; then
+  echo "[vault-sync] $(date -Is) session start: sync worker already running, not starting another" >>"$LOG"
+  exit 0
+fi
 : > "$LOG"
+rm -f "$HOOKS/.vault-seed-warned"   # per-session notice state of the push hook
 ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 {
   echo "[vault-sync] $(date -Is) session start; project $ROOT"

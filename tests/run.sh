@@ -17,6 +17,7 @@ fresh() {   # new HOME with the hooks installed, stub ob first on PATH
   export OBSIDIAN_EMAIL=me@example.com OBSIDIAN_PASSWORD=pw
   export OBSIDIAN_VAULT_NAME=Vault OBSIDIAN_VAULT_PASSWORD=vpw
   export VAULT_SYNC_RETRY_DELAY=0
+  unset VAULT_PUSH_TIMEOUT
   HOOKS="$HOME/.claude/hooks"; PULL_LOG="$HOOKS/vault-sync-pull.log"; PUSH_LOG="$HOOKS/vault-sync-push.log"
 }
 worker_running() { pgrep -f "$HOOKS/vault-sync-pull.sh --worker" >/dev/null 2>&1; }
@@ -26,7 +27,9 @@ wait_worker() {   # wait for the detached pull worker to exit (default 60s)
   echo "    worker still running after ${1:-60}s"; return 1
 }
 pull() { "$HOOKS/vault-sync-pull.sh" </dev/null; sleep 0.3; wait_worker "${1:-60}"; }
-push() { "$HOOKS/vault-sync-push.sh" </dev/null; }
+push() {   # push [hook-input-json]: stdout (what Claude Code would parse) goes to $T/push.out
+  printf '%s' "${1:-{\"hook_event_name\": \"Stop\", \"stop_hook_active\": false\}}" | "$HOOKS/vault-sync-push.sh" >"$T/push.out"
+}
 calls() { cat "$STUB_DIR/calls" 2>/dev/null; }
 stub_count() { cat "$STUB_DIR/$1" 2>/dev/null || echo 0; }
 
@@ -154,17 +157,98 @@ t "auth: explains what to set when nothing usable is configured" auth_missing
 push_happy() {
   pull; push
   eq "$(stub_count syncs)" 2 "syncs"
-  hasnt "$PUSH_LOG" 'PUSH FAILED'
+  has "$PUSH_LOG" 'push ok'; hasnt "$PUSH_LOG" 'PUSH FAILED'
+  eq "$(cat "$T/push.out")" "" "hook output on success"
 }
 t "push: syncs after a pull" push_happy
 
 push_seed_pending() {
   mkdir -p "$HOME/vault"; touch "$HOME/vault/.seeded-from-git"
   push
-  has "$PUSH_LOG" 'push skipped'
+  has "$PUSH_LOG" 'push skipped'; has "$T/push.out" '"systemMessage".*still download-only'
+  push
+  eq "$(cat "$T/push.out")" "" "second warning in the same session"
   eq "$(stub_count syncs)" 0 "syncs"
 }
-t "push: does nothing while the git seed is unreconciled" push_seed_pending
+t "push: warns once while the git seed is unreconciled" push_seed_pending
+
+push_failure_reported() {
+  pull; : >"$STUB_DIR/fail-sync"
+  push
+  has "$T/push.out" '"decision": "block".*NOT synced'
+  has "$PUSH_LOG" 'PUSH FAILED'
+  push '{"hook_event_name": "Stop", "stop_hook_active": true}'
+  has "$T/push.out" '"systemMessage".*NOT synced'; hasnt "$T/push.out" 'block'
+  push
+  hasnt "$T/push.out" 'block'   # same failure streak: warn, do not interrupt the agent again
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$T/push.out" && ok || bad "hook output is not valid JSON"
+  rm "$STUB_DIR/fail-sync"; push
+  eq "$(cat "$T/push.out")" "" "output once the push works again"
+  : >"$STUB_DIR/fail-sync"; push
+  has "$T/push.out" '"decision": "block"'   # a new streak is reported again
+}
+t "push: a failed push is reported, never silent" push_failure_reported
+
+push_session_end() {
+  pull; : >"$STUB_DIR/fail-sync"
+  push '{"hook_event_name": "SessionEnd", "reason": "other"}'
+  eq "$(cat "$T/push.out")" "" "output on SessionEnd"; has "$PUSH_LOG" 'PUSH FAILED'
+}
+t "push: SessionEnd pushes without emitting Stop decisions" push_session_end
+
+push_waits_for_lock() {
+  pull
+  STUB_SYNC_SECONDS=5 ob sync --path "$HOME/vault" >/dev/null 2>&1 &
+  sleep 1; push; wait
+  has "$PUSH_LOG" 'another sync holds the vault lock; waiting'; has "$PUSH_LOG" 'push ok'
+  eq "$(cat "$T/push.out")" "" "hook output"
+}
+t "push: waits for a sync that holds the vault lock" push_waits_for_lock
+
+push_during_first_sync() {
+  export STUB_SYNC_SECONDS=4
+  "$HOOKS/vault-sync-pull.sh" </dev/null; sleep 0.5
+  STUB_SYNC_SECONDS=0 push
+  has "$PUSH_LOG" 'push ok'; eq "$(cat "$T/push.out")" "" "hook output"
+  wait_worker
+}
+t "push: a turn that ends during the first sync still pushes" push_during_first_sync
+
+push_idle_after_synced() {
+  pull; export STUB_SYNC_HANG=120
+  local start=$SECONDS; push
+  has "$PUSH_LOG" 'push ok'
+  [ $((SECONDS - start)) -lt 20 ] && ok || bad "push took $((SECONDS - start))s"
+}
+t "push: stops an ob that idles after Fully synced" push_idle_after_synced
+
+push_timeout() {
+  pull; export STUB_SYNC_SECONDS=120 VAULT_PUSH_TIMEOUT=3
+  push
+  has "$T/push.out" 'no completed sync within 3s'
+  has "$STUB_DIR/signals" 'term'   # stopped with SIGTERM, so ob can shut down cleanly
+}
+t "push: gives up at its own deadline and stops ob cleanly" push_timeout
+
+push_never_set_up() {
+  mkdir -p "$HOME/vault"
+  push
+  has "$T/push.out" 'never set up for sync'
+}
+t "push: reports a vault that was never set up" push_never_set_up
+
+# ---- pull worker concurrency ----------------------------------------------------
+pull_single_worker() {
+  export STUB_SYNC_SECONDS=3
+  "$HOOKS/vault-sync-pull.sh" </dev/null; sleep 0.5
+  "$HOOKS/vault-sync-pull.sh" </dev/null
+  wait_worker
+  has "$PULL_LOG" 'sync worker already running, not starting another'
+  has "$PULL_LOG" 'sync ok on attempt 1'   # the first worker's log was not truncated
+  eq "$(stub_count syncs)" 1 "syncs"
+  pull; eq "$(stub_count syncs)" 2 "syncs after a later session start"
+}
+t "pull: a second SessionStart does not start a second worker" pull_single_worker
 
 # ---- build: bootstrap.sh and setup.sh ------------------------------------------
 build() {   # run setup.sh the way the bootstrap does; output in $T/build.out
@@ -207,6 +291,31 @@ setup_pins_ob() {
   has "$STUB_DIR/npm-installs" 'obsidian-headless@9\.9\.9$'
 }
 t "setup: installs the pinned obsidian-headless version" setup_pins_ob
+
+setup_registers_hooks() {
+  export STUB_OB_INSTALLED=0.0.14
+  mkdir -p "$HOME/.claude"
+  # An image built by an older setup.sh: matcher "*", and someone else's hook.
+  cat >"$HOME/.claude/settings.json" <<'JSON'
+{"hooks": {"SessionStart": [
+  {"matcher": "*", "hooks": [{"type": "command", "command": "~/.claude/hooks/vault-sync-pull.sh", "timeout": 30}]},
+  {"matcher": "startup", "hooks": [{"type": "command", "command": "other.sh"}]}]}}
+JSON
+  build; build
+  python3 - "$HOME/.claude/settings.json" >"$T/hooks.txt" <<'PY'
+import json, sys
+for event, entries in json.load(open(sys.argv[1]))["hooks"].items():
+    for e in entries:
+        for h in e["hooks"]:
+            print(event, e.get("matcher", "-"), h["command"], h.get("timeout", "-"))
+PY
+  has "$T/hooks.txt" '^SessionStart startup\|resume ~/.claude/hooks/vault-sync-pull.sh 30$'
+  has "$T/hooks.txt" '^SessionStart startup other.sh'
+  has "$T/hooks.txt" '^Stop - ~/.claude/hooks/vault-sync-push.sh 150$'
+  has "$T/hooks.txt" '^SessionEnd - ~/.claude/hooks/vault-sync-push.sh 150$'
+  eq "$(wc -l <"$T/hooks.txt" | tr -d ' ')" 4 "registered hooks after two builds"
+}
+t "setup: registers hooks once, with the right matchers" setup_registers_hooks
 
 # ---- static checks ------------------------------------------------------------
 static() {

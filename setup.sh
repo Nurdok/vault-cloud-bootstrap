@@ -11,7 +11,7 @@ set -euo pipefail
 #
 #   ~/.claude/hooks/vault-sync-pull.sh   SessionStart: launches the bg worker (keyless)
 #   ~/.claude/hooks/.decrypt.sh          keyed decrypt for the current project (ephemeral)
-#   ~/.claude/hooks/vault-sync-push.sh   Stop: pushes vault edits
+#   ~/.claude/hooks/vault-sync-push.sh   Stop and SessionEnd: pushes vault edits
 #   ~/.claude/hooks/vault-doctor.sh      diagnostic report, run on demand
 #   /home/user/CLAUDE.md                 vault instructions for every session
 #
@@ -178,16 +178,26 @@ import json, os
 path = os.path.expanduser("~/.claude/settings.json")
 cfg = json.load(open(path)) if os.path.exists(path) else {}
 hooks = cfg.setdefault("hooks", {})
-def ensure(event, command, timeout):
+def ensure(event, command, timeout, matcher=None):
     entries = hooks.setdefault(event, [])
+    # Drop any earlier registration of the same command, so a rebuild replaces
+    # its matcher and timeout instead of keeping stale ones.
     for e in entries:
-        for h in e.get("hooks", []):
-            if h.get("command") == command:
-                return
-    entries.append({"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": timeout}]})
-# launcher returns instantly, so a short timeout is fine
-ensure("SessionStart", "~/.claude/hooks/vault-sync-pull.sh", 30)
-ensure("Stop",         "~/.claude/hooks/vault-sync-push.sh", 120)
+        e["hooks"] = [h for h in e.get("hooks", []) if h.get("command") != command]
+    entries[:] = [e for e in entries if e["hooks"]]
+    entry = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+    if matcher:
+        entry["matcher"] = matcher
+    entries.append(entry)
+# The launcher returns instantly, so a short timeout is fine. Only a new or
+# resumed session needs a sync: "clear" and "compact" keep the same VM and vault.
+ensure("SessionStart", "~/.claude/hooks/vault-sync-pull.sh", 30, "startup|resume")
+# The push hook budgets 100s for itself (VAULT_PUSH_TIMEOUT), below this limit,
+# so ob is stopped cleanly by the hook rather than killed by Claude Code.
+ensure("Stop",       "~/.claude/hooks/vault-sync-push.sh", 150)
+# A last push when the session ends, for edits made in a turn that never
+# reached its Stop hook.
+ensure("SessionEnd", "~/.claude/hooks/vault-sync-push.sh", 150)
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
 os.chmod(path, 0o600)

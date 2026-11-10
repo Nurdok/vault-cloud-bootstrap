@@ -64,10 +64,10 @@ case "$cmd" in
       echo "Another sync instance is already running for this vault." >&2; exit 1
     fi
     trap 'rmdir "$state/lock" 2>/dev/null' EXIT
-    trap 'echo "Received signal to shut down..."; exit 0' TERM INT
+    trap 'echo "Received signal to shut down..."; echo term >>"$STUB_DIR/signals"; exit 0' TERM INT
     n=$(count syncs)
     echo "Starting sync:"
-    if [ "$n" -le "${STUB_SYNC_FAILS:-0}" ]; then echo "Sync failed: Error" >&2; exit 1; fi
+    if [ "$n" -le "${STUB_SYNC_FAILS:-0}" ] || [ -e "$STUB_DIR/fail-sync" ]; then echo "Sync failed: Error" >&2; exit 1; fi
     sleep "${STUB_SYNC_SECONDS:-0}" & wait $!
     cat "$state/mode" >>"$STUB_DIR/synced-modes"
     echo "Fully synced"

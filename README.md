@@ -16,7 +16,8 @@ In each session, the hooks then:
 
 - sync the vault from Obsidian Sync in the background at session start;
 - decrypt the current project's secrets from the vault;
-- push vault edits back at the end of every turn.
+- push vault edits back at the end of every turn, and tell you when a push
+  fails.
 
 The vault stays in Obsidian Sync, and no project repository has to know about
 it. This project is not affiliated with Anthropic or Obsidian.
@@ -32,8 +33,9 @@ bootstrap.sh (pasted in the UI)           SessionStart: vault-sync-pull.sh
        ├ npm i -g obsidian-headless           ob sync into ~/vault
        ├ apt install age                      decrypt _env/<repo>/*.age → repo
        ├ seed ~/vault from git (optional)     delete the key-bearing script
-       ├ install hooks + doctor           Stop (every turn): vault-sync-push.sh
-       └ /home/user/CLAUDE.md              └ ob sync (pushes edits)
+       ├ install hooks + doctor           Stop (every turn) and SessionEnd:
+       └ /home/user/CLAUDE.md              vault-sync-push.sh
+                                           └ ob sync (pushes edits; reports failure)
 ```
 
 `/home/user/CLAUDE.md` sits in the parent directory of every cloned
@@ -85,9 +87,8 @@ the question is which credential to expose.
 
 **An auth token (recommended).** Set `OBSIDIAN_AUTH_TOKEN`. `ob` reads the
 variable directly, so the hooks never log in and the account password never
-enters the environment. A token can sync and list vaults, but it is not the
-password: it cannot be used to sign in to the account page, and logging it out
-revokes it. To get one, log in once anywhere, for example in a throwaway
+enters the environment. A token still gives access to the account's vaults,
+but it is not the password, and logging it out revokes it. To get one, log in once anywhere, for example in a throwaway
 container, and copy the token:
 
 ```bash
@@ -109,6 +110,25 @@ arguments. If `ob` rejects a credential (account password, 2FA code, vault
 password) or cannot find the vault, the worker stops after two rejections
 instead of retrying ten times, so a typo cannot lock the account.
 
+## When edits are pushed, and when they are not
+
+Vault edits leave the session only when the push hook runs: at the end of each
+turn (Stop) and when the session ends (SessionEnd). A session VM is discarded
+some time after it goes idle, so an edit that was never pushed is lost with it.
+The push hook is built around that:
+
+- It waits for the vault lock when the pull worker or another push is still
+  syncing, instead of failing.
+- It stops `ob` itself after 100 seconds (`VAULT_PUSH_TIMEOUT`), with a signal
+  `ob` shuts down cleanly on, before Claude Code's hook timeout would kill it.
+- A failed push is never silent. The first failure of a streak blocks the stop
+  once, so the agent tells you; later failures show a warning line until a push
+  succeeds. Every Stop retries the push.
+
+What it cannot cover: a turn that is cut off before its Stop hook runs (the VM
+pausing mid-turn, a crash) leaves its edits unpushed until the next turn ends.
+There is no continuous sync while a turn is running.
+
 ## Seeding from a git backup
 
 A first sync through Obsidian alone downloads the vault one file at a time,
@@ -124,7 +144,8 @@ bring back notes deleted since the backup. The setup therefore marks the seed
 
 - the first sync runs in `mirror-remote` mode: download only, the server wins,
   and files that exist only in the backup are removed;
-- the push hook does nothing.
+- the push hook does nothing, and says so once per session: edits made to
+  `~/vault` before the first sync finishes are reverted by it.
 
 After the first complete pass, the worker switches back to two-way sync and
 removes the marker. `_env/` is left out of the seed, so the cached image never
@@ -192,6 +213,10 @@ keeps:
   git endpoint and explains the status code.
 - **Hooks must not block.** The SessionStart hook only launches a detached
   worker, so the agent can start immediately while the vault syncs.
+- **One sync per vault.** `ob` holds a per-vault lock and a second `ob sync`
+  exits at once. The pull worker therefore runs once per session start
+  (`startup|resume`, guarded by a lock file), and the push hook waits for the
+  lock.
 
 ## Testing
 
@@ -220,7 +245,7 @@ and run `~/.claude/hooks/vault-sync-pull.sh` to try a real sync.
 | `bootstrap.sh` | the environment's Setup script | Configuration and secrets; fetches and runs `setup.sh`. |
 | `setup.sh` | | Runs at environment build; see its header for the design. |
 | `hooks/vault-sync-pull.sh` | `~/.claude/hooks/vault-sync-pull.sh` | SessionStart: background sync and decrypt worker. |
-| `hooks/vault-sync-push.sh` | `~/.claude/hooks/vault-sync-push.sh` | Stop: pushes vault edits. |
+| `hooks/vault-sync-push.sh` | `~/.claude/hooks/vault-sync-push.sh` | Stop and SessionEnd: pushes vault edits, reports failures. |
 | `hooks/decrypt.sh` | `~/.claude/hooks/.decrypt.sh` | Template; `setup.sh` bakes the key in. Deleted after use. |
 | `hooks/vault-doctor.sh` | `~/.claude/hooks/vault-doctor.sh` | Diagnostic report; prints no secrets. |
 | `templates/user-claude.md` | `/home/user/CLAUDE.md` | Instructions for every session. |
